@@ -160,6 +160,7 @@
       <button data-page="penjualan">Penjualan</button>
       <button data-page="riwayat">Riwayat</button>
       <button data-page="harga">Harga</button>
+      <button data-page="labarugi">Laba Rugi</button>
     </nav>
     <span class="conn-badge syncing" id="connBadge">Menghubungkan...</span>
     <button class="btn sm ghost" onclick="doLogout()" title="Keluar" style="color:var(--text-dim)">Keluar</button>
@@ -602,6 +603,7 @@ function render() {
   else if (currentPage==='penjualan') app.innerHTML = renderPenjualan();
   else if (currentPage==='riwayat') app.innerHTML = renderRiwayat();
   else if (currentPage==='harga') app.innerHTML = renderHarga();
+  else if (currentPage==='labarugi') app.innerHTML = renderLabaRugi();
   attachPageHandlers();
 }
 
@@ -776,6 +778,9 @@ function attachPageHandlers() {
   const bil=document.getElementById('btnImportLocal'); if(bil) bil.onclick=()=>document.getElementById('fileImport').click();
   const bim=document.getElementById('btnImportMaster'); if(bim) bim.onclick=confirmImportMasterData;
   const fi=document.getElementById('fileImport'); if(fi) fi.onchange=importFromLocalJSON;
+
+  // Laba Rugi
+  document.querySelectorAll('[data-lrtab]').forEach(b=>b.onclick=()=>{labaRugiMode=b.dataset.lrtab;render();});
 }
 
 // ============================================================
@@ -1654,6 +1659,162 @@ function renderHarga() {
           <td style="font-size:12px;color:var(--text-dim);max-width:160px">${escapeHtml(h.catatan)||'—'}</td>
         </tr>`;
       }).join('')}</tbody>
+    </table></div>
+  </div>`;
+}
+
+// ============================================================
+// LABA RUGI — helper tanggal
+// ============================================================
+function startOfWeek(d) { const dt=new Date(d); const day=dt.getDay(); const diff=(day===0?-6:1-day); dt.setDate(dt.getDate()+diff); dt.setHours(0,0,0,0); return dt; }
+function startOfMonth(d) { const dt=new Date(d); dt.setDate(1); dt.setHours(0,0,0,0); return dt; }
+function startOfYear(d) { const dt=new Date(d); dt.setMonth(0,1); dt.setHours(0,0,0,0); return dt; }
+function addDays(d,n) { const dt=new Date(d); dt.setDate(dt.getDate()+n); return dt; }
+function addMonths(d,n) { const dt=new Date(d); dt.setMonth(dt.getMonth()+n); return dt; }
+function addYears(d,n) { const dt=new Date(d); dt.setFullYear(dt.getFullYear()+n); return dt; }
+function fmtShortDate(d) { return d.toLocaleDateString('id-ID',{day:'2-digit',month:'short'}); }
+function fmtMonthYear(d) { return d.toLocaleDateString('id-ID',{month:'short',year:'numeric'}); }
+
+// Agregasi laba-rugi untuk rentang [start, end) — end eksklusif
+function aggregatePeriod(start, end) {
+  const inRange = (tgl) => { const d=new Date(tgl); return d>=start && d<end; };
+  const sales = db.sales.filter(s=>inRange(s.tanggal));
+  const revenue = sales.reduce((a,s)=>a+s.total,0);
+  const grossProfit = sales.reduce((a,s)=>a+(s.totalProfit||0),0);
+  const cogs = revenue - grossProfit;
+  const lossAdj = db.adjustments.filter(a=>inRange(a.tanggal) && a.qty<0 && (a.alasan==='Barang Rusak'||a.alasan==='Barang Hilang'));
+  const lossValue = lossAdj.reduce((a,adj)=>a+(adj.consumptions||[]).reduce((s,c)=>s+(c.qty*c.hargaBeli),0),0);
+  const netProfit = grossProfit - lossValue;
+  const margin = revenue>0 ? (netProfit/revenue*100) : 0;
+  return { revenue, cogs, grossProfit, lossValue, netProfit, margin, txCount: sales.length };
+}
+
+function buildTrend(mode) {
+  const now = new Date();
+  const buckets = [];
+  if (mode==='minggu') {
+    const curStart = startOfWeek(now);
+    for (let i=7; i>=0; i--) {
+      const start = addDays(curStart, -7*i);
+      const end = addDays(start, 7);
+      buckets.push({ label: fmtShortDate(start)+' - '+fmtShortDate(addDays(end,-1)), start, end, isCurrent: i===0 });
+    }
+  } else if (mode==='bulan') {
+    const curStart = startOfMonth(now);
+    for (let i=11; i>=0; i--) {
+      const start = addMonths(curStart, -i);
+      const end = addMonths(start, 1);
+      buckets.push({ label: fmtMonthYear(start), start, end, isCurrent: i===0 });
+    }
+  } else { // tahun
+    const curStart = startOfYear(now);
+    for (let i=4; i>=0; i--) {
+      const start = addYears(curStart, -i);
+      const end = addYears(start, 1);
+      buckets.push({ label: String(start.getFullYear()), start, end, isCurrent: i===0 });
+    }
+  }
+  return buckets.map(b => ({ ...b, ...aggregatePeriod(b.start, b.end) }));
+}
+
+let labaRugiMode = 'bulan';
+
+function renderLabaRugi() {
+  const trend = buildTrend(labaRugiMode);
+  const current = trend[trend.length-1];
+  const previous = trend.length>1 ? trend[trend.length-2] : null;
+  const growthPct = previous && previous.netProfit !== 0 ? ((current.netProfit-previous.netProfit)/Math.abs(previous.netProfit)*100) : null;
+
+  const maxProfit = Math.max(...trend.map(t=>Math.abs(t.netProfit)), 1);
+
+  // Top 5 produk paling untung di periode saat ini
+  const productProfits = {};
+  db.sales.filter(s=>{const d=new Date(s.tanggal); return d>=current.start && d<current.end;}).forEach(s=>{
+    s.items.forEach(it=>{
+      if(!productProfits[it.productId]) productProfits[it.productId]={ qty:0, profit:0, revenue:0 };
+      productProfits[it.productId].qty += it.qty;
+      productProfits[it.productId].profit += it.profit;
+      productProfits[it.productId].revenue += it.subtotal;
+    });
+  });
+  const topProducts = Object.entries(productProfits)
+    .map(([pid,v])=>({ product:getProduct(pid), ...v }))
+    .filter(x=>x.product)
+    .sort((a,b)=>b.profit-a.profit)
+    .slice(0,5);
+
+  const periodLabel = labaRugiMode==='minggu'?'Minggu Ini':labaRugiMode==='bulan'?'Bulan Ini':'Tahun Ini';
+
+  return `
+  <div class="page-title">Laba Rugi</div>
+  <div class="page-subtitle">Ringkasan keuntungan dari penjualan (FIFO) dan kerugian stock</div>
+
+  <div class="tabs">
+    <button class="${labaRugiMode==='minggu'?'active':''}" data-lrtab="minggu">Mingguan</button>
+    <button class="${labaRugiMode==='bulan'?'active':''}" data-lrtab="bulan">Bulanan</button>
+    <button class="${labaRugiMode==='tahun'?'active':''}" data-lrtab="tahun">Tahunan</button>
+  </div>
+
+  <div class="cards">
+    <div class="card"><div class="card-label">Pendapatan · ${periodLabel}</div><div class="card-value">${fmt.rp(current.revenue)}</div><div class="card-sub">${current.txCount} transaksi</div></div>
+    <div class="card"><div class="card-label">HPP (Modal Terjual)</div><div class="card-value">${fmt.rp(current.cogs)}</div></div>
+    <div class="card"><div class="card-label">Laba Kotor</div><div class="card-value" style="color:var(--ok)">${fmt.rp(current.grossProfit)}</div></div>
+    <div class="card"><div class="card-label">Kerugian Stock</div><div class="card-value" style="color:${current.lossValue>0?'var(--danger)':'inherit'}">${fmt.rp(current.lossValue)}</div><div class="card-sub">barang rusak/hilang</div></div>
+    <div class="card"><div class="card-label">Laba Bersih</div><div class="card-value" style="color:${current.netProfit>=0?'var(--ok)':'var(--danger)'}">${fmt.rp(current.netProfit)}</div>
+      ${growthPct!==null?`<div class="card-sub" style="color:${growthPct>=0?'var(--ok)':'var(--danger)'}">${growthPct>=0?'▲':'▼'}${Math.abs(growthPct).toFixed(1)}% vs periode lalu</div>`:''}
+    </div>
+    <div class="card"><div class="card-label">Margin Bersih</div><div class="card-value">${current.margin.toFixed(1)}%</div></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header"><div class="panel-title">Tren Laba Bersih</div></div>
+    <div class="panel-body">
+      <div style="display:flex;align-items:flex-end;gap:6px;height:140px;margin-bottom:8px">
+        ${trend.map(t=>{
+          const h = Math.max(4, Math.abs(t.netProfit)/maxProfit*120);
+          const color = t.netProfit>=0 ? (t.isCurrent?'var(--accent)':'var(--ok)') : 'var(--danger)';
+          return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%" title="${t.label}: ${fmt.rp(t.netProfit)}">
+            <div style="width:100%;max-width:36px;height:${h}px;background:${color};border-radius:4px 4px 0 0;${t.isCurrent?'box-shadow:0 0 0 2px var(--accent)':''}"></div>
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="display:flex;gap:6px">
+        ${trend.map(t=>`<div style="flex:1;text-align:center;font-size:10px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.label}</div>`).join('')}
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header"><div class="panel-title">Rincian per Periode</div></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Periode</th><th class="num">Pendapatan</th><th class="num">HPP</th><th class="num">Laba Kotor</th><th class="num">Kerugian</th><th class="num">Laba Bersih</th><th class="num">Margin</th><th class="num">Transaksi</th></tr></thead>
+      <tbody>${trend.slice().reverse().map(t=>`
+        <tr style="${t.isCurrent?'background:var(--panel-2)':''}">
+          <td><strong>${t.label}</strong>${t.isCurrent?' <span class="status ok">Sekarang</span>':''}</td>
+          <td class="num">${fmt.rp(t.revenue)}</td>
+          <td class="num" style="color:var(--text-dim)">${fmt.rp(t.cogs)}</td>
+          <td class="num" style="color:var(--ok)">${fmt.rp(t.grossProfit)}</td>
+          <td class="num" style="color:${t.lossValue>0?'var(--danger)':'var(--text-dim)'}">${t.lossValue>0?'-':''}${fmt.rp(t.lossValue)}</td>
+          <td class="num" style="color:${t.netProfit>=0?'var(--ok)':'var(--danger)'}"><strong>${fmt.rp(t.netProfit)}</strong></td>
+          <td class="num">${t.margin.toFixed(1)}%</td>
+          <td class="num">${t.txCount}</td>
+        </tr>
+      `).join('')}</tbody>
+    </table></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header"><div class="panel-title">Produk Paling Untung — ${periodLabel}</div></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Produk</th><th class="num">Qty Terjual</th><th class="num">Pendapatan</th><th class="num">Profit</th></tr></thead>
+      <tbody>${topProducts.length===0?`<tr><td colspan="4"><div class="empty" style="padding:20px">Belum ada penjualan di periode ini</div></td></tr>`:topProducts.map(t=>`
+        <tr>
+          <td><strong>${t.product.nama}</strong></td>
+          <td class="num">${fmt.num(t.qty)} ${t.product.satuan}</td>
+          <td class="num">${fmt.rp(t.revenue)}</td>
+          <td class="num" style="color:var(--ok)"><strong>${fmt.rp(t.profit)}</strong></td>
+        </tr>
+      `).join('')}</tbody>
     </table></div>
   </div>`;
 }
