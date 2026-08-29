@@ -1335,37 +1335,40 @@ function openTxModal(type, existingId) {
   };
 }
 
+function buildMarginRowHtml(idx, type) {
+  const it = txDraft.items[idx];
+  const prod = it.productId?getProduct(it.productId):null;
+  if(!(type==='sale'&&prod&&it.qty>0&&it.hargaJual>0)) return '';
+  if (!hppVisible) {
+    return `<tr id="marginrow-${idx}"><td></td><td colspan="6" style="padding:2px 12px 8px;font-size:11px;border-bottom:1px solid var(--border)">
+      <span style="color:var(--text-dim)">HPP & margin disembunyikan · klik 👁 di atas untuk lihat</span>
+    </td><td></td></tr>`;
+  }
+  const sim=fifoSimulate(prod.id,it.qty,prod.hargaBeli);
+  const diskon=it.diskon||0;
+  const netSubtotal=(it.qty*it.hargaJual)-diskon;
+  const mp=netSubtotal>0?((netSubtotal-sim.totalHpp)/netSubtotal*100):0;
+  const ml=prod.hargaBeli>0?((it.hargaJual-prod.hargaBeli)/it.hargaJual*100):0;
+  const mc=mp>=15?'var(--ok)':mp>=5?'var(--warn)':'var(--danger)';
+  const lc=ml>=15?'var(--ok)':ml>=5?'var(--warn)':'var(--danger)';
+  const bd=sim.batches.length>1?` · ${sim.batches.map(b=>`${fmt.num(b.qty)}×${fmt.rp(b.harga)}${b._fallback?' (fallback)':''}`).join(' + ')}`:' ';
+  return `<tr id="marginrow-${idx}"><td></td><td colspan="6" style="padding:2px 12px 8px;font-size:11px;border-bottom:1px solid var(--border)">
+    <span style="color:var(--text-dim)">HPP FIFO:</span> <strong>${fmt.rp(sim.avgHpp)}</strong>${bd}·
+    <span style="color:var(--text-dim)">Margin:</span> <strong style="color:${mc}">${mp.toFixed(1)}%</strong> ·
+    <span style="color:var(--text-dim)">vs Harga Baru (${fmt.rp(prod.hargaBeli)}):</span> <strong style="color:${lc}">${ml.toFixed(1)}%</strong>
+    ${diskon>0?` · <span style="color:var(--warn)">Potongan: ${fmt.rp(diskon)}</span>`:''}
+    ${mp<5?`<br><span style="color:var(--danger)">⚠ Margin tipis!</span>`:''}
+    ${sim.shortfall>0?`<br><span style="color:var(--danger)">⚠ Shortfall ${fmt.num(sim.shortfall)} ${prod.satuan}</span>`:''}
+  </td><td></td></tr>`;
+}
+
 function renderTxItems(type) {
   const body=document.getElementById('txItemsBody'); if(!body) return;
   const priceField=type==='purchase'?'hargaBeli':'hargaJual';
 
   body.innerHTML=txDraft.items.map((it,idx)=>{
     const prod=it.productId?getProduct(it.productId):null, stock=prod?getStock(prod.id):0;
-    let marginRow='';
-    if(type==='sale'&&prod&&it.qty>0&&it.hargaJual>0){
-      if (!hppVisible) {
-        marginRow=`<tr><td></td><td colspan="6" style="padding:2px 12px 8px;font-size:11px;border-bottom:1px solid var(--border)">
-          <span style="color:var(--text-dim)">HPP & margin disembunyikan · klik 👁 di atas untuk lihat</span>
-        </td><td></td></tr>`;
-      } else {
-        const sim=fifoSimulate(prod.id,it.qty,prod.hargaBeli);
-        const diskon=it.diskon||0;
-        const netSubtotal=(it.qty*it.hargaJual)-diskon;
-        const mp=netSubtotal>0?((netSubtotal-sim.totalHpp)/netSubtotal*100):0;
-        const ml=prod.hargaBeli>0?((it.hargaJual-prod.hargaBeli)/it.hargaJual*100):0;
-        const mc=mp>=15?'var(--ok)':mp>=5?'var(--warn)':'var(--danger)';
-        const lc=ml>=15?'var(--ok)':ml>=5?'var(--warn)':'var(--danger)';
-        const bd=sim.batches.length>1?` · ${sim.batches.map(b=>`${fmt.num(b.qty)}×${fmt.rp(b.harga)}${b._fallback?' (fallback)':''}`).join(' + ')}`:' ';
-        marginRow=`<tr><td></td><td colspan="6" style="padding:2px 12px 8px;font-size:11px;border-bottom:1px solid var(--border)">
-          <span style="color:var(--text-dim)">HPP FIFO:</span> <strong>${fmt.rp(sim.avgHpp)}</strong>${bd}·
-          <span style="color:var(--text-dim)">Margin:</span> <strong style="color:${mc}">${mp.toFixed(1)}%</strong> ·
-          <span style="color:var(--text-dim)">vs Harga Baru (${fmt.rp(prod.hargaBeli)}):</span> <strong style="color:${lc}">${ml.toFixed(1)}%</strong>
-          ${diskon>0?` · <span style="color:var(--warn)">Potongan: ${fmt.rp(diskon)}</span>`:''}
-          ${mp<5?`<br><span style="color:var(--danger)">⚠ Margin tipis!</span>`:''}
-          ${sim.shortfall>0?`<br><span style="color:var(--danger)">⚠ Shortfall ${fmt.num(sim.shortfall)} ${prod.satuan}</span>`:''}
-        </td><td></td></tr>`;
-      }
-    }
+    const marginRow = buildMarginRowHtml(idx, type);
     let vendorRow='';
     if(type==='purchase'&&prod){
       const vendors=getVendorPrices(prod.id);
@@ -1393,21 +1396,21 @@ function renderTxItems(type) {
       <td class="col-qty"><input type="number" class="num" data-field="qty" data-idx="${idx}" value="${it.qty||''}" min="0" step="1"></td>
       <td class="col-price"><input type="number" class="num" data-field="${priceField}" data-idx="${idx}" value="${it[priceField]||''}" min="0" step="100"></td>
       ${type==='sale'?`<td class="col-price"><input type="number" class="num" data-field="diskon" data-idx="${idx}" value="${it.diskon||''}" min="0" step="500" placeholder="0" style="color:var(--warn)"></td>`:''}
-      ${type==='sale'?`<td class="col-price num" style="color:var(--text-dim)">${hppVisible?fmt.num(it.hpp||0):'×××'}</td>`:''}
-      <td class="col-total num"><strong>${fmt.rp(it.subtotal)}</strong></td>
-      ${type==='sale'?`<td class="col-total num" style="color:${it.profit>=0?'var(--ok)':'var(--danger)'}">${hppVisible?fmt.rp(it.profit):'×××'}</td>`:''}
+      ${type==='sale'?`<td class="col-price num" style="color:var(--text-dim)" id="cell-hpp-${idx}">${hppVisible?fmt.num(it.hpp||0):'×××'}</td>`:''}
+      <td class="col-total num" id="cell-subtotal-${idx}"><strong>${fmt.rp(it.subtotal)}</strong></td>
+      ${type==='sale'?`<td class="col-total num" id="cell-profit-${idx}" style="color:${it.profit>=0?'var(--ok)':'var(--danger)'}">${hppVisible?fmt.rp(it.profit):'×××'}</td>`:''}
       <td class="col-act"><button class="remove-btn" data-remove="${idx}">×</button></td>
     </tr>${marginRow}${vendorRow}`;
   }).join('');
 
-  // Input handlers
+  // Input handlers — update SEL yang bergantung saja, jangan sentuh input yang lagi diketik
   body.querySelectorAll('input[data-field]').forEach(inp=>{
     inp.oninput=e=>{
       const idx=parseInt(e.target.dataset.idx), field=e.target.dataset.field;
       txDraft.items[idx][field]=Number(e.target.value)||0;
       recalcItem(idx,type);
-      if(type==='sale'){const s=e.target.selectionStart;renderTxItems(type);const sel=document.querySelector(`input[data-field="${field}"][data-idx="${idx}"]`);if(sel){sel.focus();try{sel.setSelectionRange(s,s);}catch(_){}}}
-      else updateTotals(type);
+      updateItemCellsOnly(idx, type);
+      updateTotalsDisplayOnly(type);
     };
   });
   body.querySelectorAll('[data-remove]').forEach(btn=>btn.onclick=e=>{txDraft.items.splice(parseInt(e.target.dataset.remove),1);renderTxItems(type);updateTotals(type);});
@@ -1479,32 +1482,83 @@ function recalcItem(idx, type) {
   }
 }
 
+// Update sel-sel yang bergantung (Subtotal/HPP/Profit/baris margin) TANPA menyentuh
+// elemen <input> yang sedang diketik user — supaya kursor/ketikan tidak terganggu.
+function updateItemCellsOnly(idx, type) {
+  const it = txDraft.items[idx];
+  const subtotalCell = document.getElementById(`cell-subtotal-${idx}`);
+  if (subtotalCell) subtotalCell.innerHTML = `<strong>${fmt.rp(it.subtotal)}</strong>`;
+
+  if (type==='sale') {
+    const hppCell = document.getElementById(`cell-hpp-${idx}`);
+    if (hppCell) hppCell.textContent = hppVisible?fmt.num(it.hpp||0):'×××';
+    const profitCell = document.getElementById(`cell-profit-${idx}`);
+    if (profitCell) {
+      profitCell.textContent = hppVisible?fmt.rp(it.profit):'×××';
+      profitCell.style.color = it.profit>=0?'var(--ok)':'var(--danger)';
+    }
+    // Baris margin: update kalau sudah ada, insert kalau baru muncul, hapus kalau sudah tidak relevan
+    const existingMarginRow = document.getElementById(`marginrow-${idx}`);
+    const newMarginHtml = buildMarginRowHtml(idx, type);
+    if (newMarginHtml) {
+      if (existingMarginRow) {
+        existingMarginRow.outerHTML = newMarginHtml; // aman: baris ini tidak berisi <input>
+      } else {
+        const mainRow = subtotalCell ? subtotalCell.closest('tr') : null;
+        if (mainRow) mainRow.insertAdjacentHTML('afterend', newMarginHtml);
+      }
+    } else if (existingMarginRow) {
+      existingMarginRow.remove();
+    }
+  }
+}
+
 function updateTotals(type) {
-  let total=0,profit=0;
-  txDraft.items.forEach(it=>{total+=it.subtotal||0;profit+=it.profit||0;});
-  const diskonTotal = txDraft.diskonTotal||0;
-  total = Math.max(0, total - diskonTotal);
-  profit = profit - diskonTotal;
-  txDraft.total=total; txDraft.totalProfit=profit;
+  recalcTotals(type);
   const el=document.getElementById('txTotals'); if(!el) return;
-  if(type==='purchase') el.innerHTML=`<div class="totals-row big"><span>Total Pembelian:</span> <strong>${fmt.rp(total)}</strong></div>`;
-  else{
+  const total=txDraft.total, profit=txDraft.totalProfit, diskonTotal=txDraft.diskonTotal||0;
+  if(type==='purchase') {
+    el.innerHTML=`<div class="totals-row big"><span>Total Pembelian:</span> <strong id="totals-total-val">${fmt.rp(total)}</strong></div>`;
+  } else {
     const m=total>0?((profit/total)*100).toFixed(1):0;
     el.innerHTML=`
       <div class="totals-row" style="width:100%;justify-content:space-between;align-items:center">
         <span style="color:var(--text-dim);font-size:12px">Diskon Total (opsional, potong dari total keseluruhan)</span>
         <input type="number" id="txDiskonTotal" value="${diskonTotal||''}" min="0" step="500" placeholder="0" style="width:140px;color:var(--warn)">
       </div>
-      <div class="totals-row"><span>Profit:</span> <strong class="profit ${profit<0?'neg':''}">${hppVisible?`${fmt.rp(profit)} (${m}%)`:'×××'}</strong></div>
-      <div class="totals-row big"><span>Total Penjualan:</span> <strong>${fmt.rp(total)}</strong></div>`;
+      <div class="totals-row"><span>Profit:</span> <strong class="profit ${profit<0?'neg':''}" id="totals-profit-val">${hppVisible?`${fmt.rp(profit)} (${m}%)`:'×××'}</strong></div>
+      <div class="totals-row big"><span>Total Penjualan:</span> <strong id="totals-total-val">${fmt.rp(total)}</strong></div>`;
     const dtInput = document.getElementById('txDiskonTotal');
+    // Update ringan saja saat mengetik — JANGAN rebuild innerHTML div ini (akan menghancurkan input yang sedang diketik)
     if (dtInput) dtInput.oninput = (e) => {
-      const cursorPos = e.target.selectionStart;
       txDraft.diskonTotal = Number(e.target.value)||0;
-      updateTotals(type);
-      const newInput = document.getElementById('txDiskonTotal');
-      if (newInput) { newInput.focus(); try{newInput.setSelectionRange(cursorPos,cursorPos);}catch(_){} }
+      updateTotalsDisplayOnly(type);
     };
+  }
+}
+
+// Hitung ulang total/profit dari items + diskonTotal, simpan ke txDraft (tanpa sentuh DOM)
+function recalcTotals(type) {
+  let total=0,profit=0;
+  txDraft.items.forEach(it=>{total+=it.subtotal||0;profit+=it.profit||0;});
+  const diskonTotal = txDraft.diskonTotal||0;
+  total = Math.max(0, total - diskonTotal);
+  profit = profit - diskonTotal;
+  txDraft.total=total; txDraft.totalProfit=profit;
+}
+
+// Update tampilan Profit & Total TANPA menyentuh input Diskon Total atau input lain
+function updateTotalsDisplayOnly(type) {
+  recalcTotals(type);
+  const total=txDraft.total, profit=txDraft.totalProfit;
+  document.getElementById('totals-total-val') && (document.getElementById('totals-total-val').textContent=fmt.rp(total));
+  if (type==='sale') {
+    const m=total>0?((profit/total)*100).toFixed(1):0;
+    const profitEl=document.getElementById('totals-profit-val');
+    if (profitEl) {
+      profitEl.textContent = hppVisible?`${fmt.rp(profit)} (${m}%)`:'×××';
+      profitEl.classList.toggle('neg', profit<0);
+    }
   }
 }
 
