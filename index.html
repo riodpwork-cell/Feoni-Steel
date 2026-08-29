@@ -407,9 +407,10 @@ async function loadAll() {
     db.sales = sales.map(s => ({
       id: s.id, nomor: s.nomor, tanggal: s.tanggal, customer: s.customer,
       total: Number(s.total), totalProfit: Number(s.total_profit),
-      status: s.status || 'final',
+      status: s.status || 'final', diskonTotal: Number(s.diskon_total||0),
       items: (siMap[s.id]||[]).map(i => ({
         productId: i.product_id, qty: Number(i.qty), hargaJual: Number(i.harga_jual),
+        diskon: Number(i.diskon||0),
         hpp: Number(i.hpp), subtotal: Number(i.subtotal), profit: Number(i.profit),
         consumptions: i.consumptions||[]
       }))
@@ -1275,8 +1276,8 @@ function openTxModal(type, existingId) {
       supplier: type==='purchase'?'':undefined,
       customer: type==='sale'?'':undefined,
       status: type==='sale' ? 'draft' : 'final', // default kalau tersimpan tanpa sengaja
-      items: [{ productId:'', qty:0, hargaBeli:0, hargaJual:0, hpp:0, subtotal:0, profit:0 }],
-      total: 0, totalProfit: 0
+      items: [{ productId:'', qty:0, hargaBeli:0, hargaJual:0, diskon:0, hpp:0, subtotal:0, profit:0 }],
+      total: 0, totalProfit: 0, diskonTotal: 0
     };
   }
 
@@ -1301,7 +1302,7 @@ function openTxModal(type, existingId) {
           </div>
         </div>
         <div class="table-wrap"><table>
-          <thead><tr><th class="col-no">#</th><th>Produk</th><th class="col-qty num">Qty</th><th class="col-price num">${type==='purchase'?'Harga Beli':'Harga Jual'}</th>${type==='sale'?'<th class="col-price num">HPP</th>':''}<th class="col-total num">Subtotal</th>${type==='sale'?'<th class="col-total num">Profit</th>':''}<th class="col-act"></th></tr></thead>
+          <thead><tr><th class="col-no">#</th><th>Produk</th><th class="col-qty num">Qty</th><th class="col-price num">${type==='purchase'?'Harga Beli':'Harga Jual'}</th>${type==='sale'?'<th class="col-price num">Potongan</th><th class="col-price num">HPP</th>':''}<th class="col-total num">Subtotal</th>${type==='sale'?'<th class="col-total num">Profit</th>':''}<th class="col-act"></th></tr></thead>
           <tbody id="txItemsBody"></tbody>
         </table></div>
         <div class="totals" id="txTotals"></div>
@@ -1319,7 +1320,7 @@ function openTxModal(type, existingId) {
   document.getElementById('txTanggal').onchange=e=>txDraft.tanggal=e.target.value;
   document.getElementById('txParty').oninput=e=>txDraft[partyField]=e.target.value;
   document.getElementById('txAddItem').onclick=()=>{
-    txDraft.items.push({productId:'',qty:0,hargaBeli:0,hargaJual:0,hpp:0,subtotal:0,profit:0});
+    txDraft.items.push({productId:'',qty:0,hargaBeli:0,hargaJual:0,diskon:0,hpp:0,subtotal:0,profit:0});
     renderTxItems(type);
     setTimeout(()=>{const inputs=document.querySelectorAll('.combobox .cb-input');const last=inputs[inputs.length-1];if(last)last.focus();},30);
   };
@@ -1343,20 +1344,23 @@ function renderTxItems(type) {
     let marginRow='';
     if(type==='sale'&&prod&&it.qty>0&&it.hargaJual>0){
       if (!hppVisible) {
-        marginRow=`<tr><td></td><td colspan="5" style="padding:2px 12px 8px;font-size:11px;border-bottom:1px solid var(--border)">
+        marginRow=`<tr><td></td><td colspan="6" style="padding:2px 12px 8px;font-size:11px;border-bottom:1px solid var(--border)">
           <span style="color:var(--text-dim)">HPP & margin disembunyikan · klik 👁 di atas untuk lihat</span>
         </td><td></td></tr>`;
       } else {
         const sim=fifoSimulate(prod.id,it.qty,prod.hargaBeli);
-        const mp=it.hargaJual>0?((it.hargaJual-sim.avgHpp)/it.hargaJual*100):0;
+        const diskon=it.diskon||0;
+        const netSubtotal=(it.qty*it.hargaJual)-diskon;
+        const mp=netSubtotal>0?((netSubtotal-sim.totalHpp)/netSubtotal*100):0;
         const ml=prod.hargaBeli>0?((it.hargaJual-prod.hargaBeli)/it.hargaJual*100):0;
         const mc=mp>=15?'var(--ok)':mp>=5?'var(--warn)':'var(--danger)';
         const lc=ml>=15?'var(--ok)':ml>=5?'var(--warn)':'var(--danger)';
         const bd=sim.batches.length>1?` · ${sim.batches.map(b=>`${fmt.num(b.qty)}×${fmt.rp(b.harga)}${b._fallback?' (fallback)':''}`).join(' + ')}`:' ';
-        marginRow=`<tr><td></td><td colspan="5" style="padding:2px 12px 8px;font-size:11px;border-bottom:1px solid var(--border)">
+        marginRow=`<tr><td></td><td colspan="6" style="padding:2px 12px 8px;font-size:11px;border-bottom:1px solid var(--border)">
           <span style="color:var(--text-dim)">HPP FIFO:</span> <strong>${fmt.rp(sim.avgHpp)}</strong>${bd}·
           <span style="color:var(--text-dim)">Margin:</span> <strong style="color:${mc}">${mp.toFixed(1)}%</strong> ·
           <span style="color:var(--text-dim)">vs Harga Baru (${fmt.rp(prod.hargaBeli)}):</span> <strong style="color:${lc}">${ml.toFixed(1)}%</strong>
+          ${diskon>0?` · <span style="color:var(--warn)">Potongan: ${fmt.rp(diskon)}</span>`:''}
           ${mp<5?`<br><span style="color:var(--danger)">⚠ Margin tipis!</span>`:''}
           ${sim.shortfall>0?`<br><span style="color:var(--danger)">⚠ Shortfall ${fmt.num(sim.shortfall)} ${prod.satuan}</span>`:''}
         </td><td></td></tr>`;
@@ -1388,9 +1392,10 @@ function renderTxItems(type) {
       </div></td>
       <td class="col-qty"><input type="number" class="num" data-field="qty" data-idx="${idx}" value="${it.qty||''}" min="0" step="1"></td>
       <td class="col-price"><input type="number" class="num" data-field="${priceField}" data-idx="${idx}" value="${it[priceField]||''}" min="0" step="100"></td>
+      ${type==='sale'?`<td class="col-price"><input type="number" class="num" data-field="diskon" data-idx="${idx}" value="${it.diskon||''}" min="0" step="500" placeholder="0" style="color:var(--warn)"></td>`:''}
       ${type==='sale'?`<td class="col-price num" style="color:var(--text-dim)">${hppVisible?fmt.num(it.hpp||0):'×××'}</td>`:''}
       <td class="col-total num"><strong>${fmt.rp(it.subtotal)}</strong></td>
-      ${type==='sale'?`<td class="col-total num" style="color:${it.profit>=0?'var(--ok)':'var(--danger)'}">${fmt.rp(it.profit)}</td>`:''}
+      ${type==='sale'?`<td class="col-total num" style="color:${it.profit>=0?'var(--ok)':'var(--danger)'}">${hppVisible?fmt.rp(it.profit):'×××'}</td>`:''}
       <td class="col-act"><button class="remove-btn" data-remove="${idx}">×</button></td>
     </tr>${marginRow}${vendorRow}`;
   }).join('');
@@ -1466,7 +1471,9 @@ function recalcItem(idx, type) {
   const it=txDraft.items[idx];
   if(type==='purchase') { it.subtotal=(it.qty||0)*(it.hargaBeli||0); }
   else {
-    it.subtotal=(it.qty||0)*(it.hargaJual||0);
+    const diskon = it.diskon||0;
+    const gross = (it.qty||0)*(it.hargaJual||0);
+    it.subtotal = Math.max(0, gross - diskon);
     if(it.productId&&it.qty>0){const sim=fifoSimulate(it.productId,it.qty,getProduct(it.productId)?.hargaBeli||0);it.hpp=sim.avgHpp;it.profit=it.subtotal-sim.totalHpp;}
     else{it.hpp=0;it.profit=0;}
   }
@@ -1475,10 +1482,30 @@ function recalcItem(idx, type) {
 function updateTotals(type) {
   let total=0,profit=0;
   txDraft.items.forEach(it=>{total+=it.subtotal||0;profit+=it.profit||0;});
+  const diskonTotal = txDraft.diskonTotal||0;
+  total = Math.max(0, total - diskonTotal);
+  profit = profit - diskonTotal;
   txDraft.total=total; txDraft.totalProfit=profit;
   const el=document.getElementById('txTotals'); if(!el) return;
   if(type==='purchase') el.innerHTML=`<div class="totals-row big"><span>Total Pembelian:</span> <strong>${fmt.rp(total)}</strong></div>`;
-  else{const m=total>0?((profit/total)*100).toFixed(1):0;el.innerHTML=`<div class="totals-row"><span>Profit:</span> <strong class="profit ${profit<0?'neg':''}">${fmt.rp(profit)} (${m}%)</strong></div><div class="totals-row big"><span>Total Penjualan:</span> <strong>${fmt.rp(total)}</strong></div>`;}
+  else{
+    const m=total>0?((profit/total)*100).toFixed(1):0;
+    el.innerHTML=`
+      <div class="totals-row" style="width:100%;justify-content:space-between;align-items:center">
+        <span style="color:var(--text-dim);font-size:12px">Diskon Total (opsional, potong dari total keseluruhan)</span>
+        <input type="number" id="txDiskonTotal" value="${diskonTotal||''}" min="0" step="500" placeholder="0" style="width:140px;color:var(--warn)">
+      </div>
+      <div class="totals-row"><span>Profit:</span> <strong class="profit ${profit<0?'neg':''}">${hppVisible?`${fmt.rp(profit)} (${m}%)`:'×××'}</strong></div>
+      <div class="totals-row big"><span>Total Penjualan:</span> <strong>${fmt.rp(total)}</strong></div>`;
+    const dtInput = document.getElementById('txDiskonTotal');
+    if (dtInput) dtInput.oninput = (e) => {
+      const cursorPos = e.target.selectionStart;
+      txDraft.diskonTotal = Number(e.target.value)||0;
+      updateTotals(type);
+      const newInput = document.getElementById('txDiskonTotal');
+      if (newInput) { newInput.focus(); try{newInput.setSelectionRange(cursorPos,cursorPos);}catch(_){} }
+    };
+  }
 }
 
 async function saveTransaction(type, asDraft, isDraftEdit) {
@@ -1512,68 +1539,75 @@ async function saveTransaction(type, asDraft, isDraftEdit) {
       toast('Pembelian disimpan');
     } else if (asDraft) {
       // --- SIMPAN SEBAGAI DRAFT: tidak menyentuh stock sama sekali ---
-      const totalAmount = validItems.reduce((a,it)=>a+((it.qty||0)*(it.hargaJual||0)),0);
+      const diskonTotal = txDraft.diskonTotal||0;
+      const grossAmount = validItems.reduce((a,it)=>a+Math.max(0,(it.qty||0)*(it.hargaJual||0)-(it.diskon||0)),0);
+      const totalAmount = Math.max(0, grossAmount - diskonTotal);
       // HPP/profit di draft cuma preview (simulasi, tidak mengunci layer)
       const previewItems = validItems.map(it=>{
         const p=getProduct(it.productId);
         const sim = fifoSimulate(it.productId, it.qty, p?.hargaBeli||0);
-        const subtotal = it.qty*it.hargaJual;
-        return { ...it, subtotal, hpp: sim.avgHpp, profit: subtotal-sim.totalHpp, consumptions: [] };
+        const diskon = it.diskon||0;
+        const subtotal = Math.max(0, it.qty*it.hargaJual - diskon);
+        return { ...it, diskon, subtotal, hpp: sim.avgHpp, profit: subtotal-sim.totalHpp, consumptions: [] };
       });
-      const totalProfitPreview = previewItems.reduce((a,it)=>a+it.profit,0);
+      const totalProfitPreview = previewItems.reduce((a,it)=>a+it.profit,0) - diskonTotal;
 
       if (isDraftEdit) {
         // Update draft yang sudah ada
-        await sb.patch('sales', `?id=eq.${txDraft.id}`, { nomor:txDraft.nomor, tanggal:txDraft.tanggal, customer:txDraft.customer, total:totalAmount, total_profit:totalProfitPreview, status:'draft' });
+        await sb.patch('sales', `?id=eq.${txDraft.id}`, { nomor:txDraft.nomor, tanggal:txDraft.tanggal, customer:txDraft.customer, total:totalAmount, total_profit:totalProfitPreview, status:'draft', diskon_total:diskonTotal });
         await sb.delete('sale_items', `?sale_id=eq.${txDraft.id}`);
-        const sItems=previewItems.map(it=>({sale_id:txDraft.id,product_id:it.productId,qty:it.qty,harga_jual:it.hargaJual,hpp:it.hpp,subtotal:it.subtotal,profit:it.profit,consumptions:[]}));
+        const sItems=previewItems.map(it=>({sale_id:txDraft.id,product_id:it.productId,qty:it.qty,harga_jual:it.hargaJual,diskon:it.diskon,hpp:it.hpp,subtotal:it.subtotal,profit:it.profit,consumptions:[]}));
         await sb.post('sale_items',sItems,'return=minimal');
         const idx = db.sales.findIndex(s=>s.id===txDraft.id);
-        const updated = {id:txDraft.id,nomor:txDraft.nomor,tanggal:txDraft.tanggal,customer:txDraft.customer,total:totalAmount,totalProfit:totalProfitPreview,status:'draft',items:previewItems};
+        const updated = {id:txDraft.id,nomor:txDraft.nomor,tanggal:txDraft.tanggal,customer:txDraft.customer,total:totalAmount,totalProfit:totalProfitPreview,status:'draft',diskonTotal,items:previewItems};
         if (idx>=0) db.sales[idx]=updated; else db.sales.unshift(updated);
         toast('Draft diperbarui');
       } else {
         // Draft baru
-        await sb.post('sales',[{id:txDraft.id,nomor:txDraft.nomor,tanggal:txDraft.tanggal,customer:txDraft.customer,total:totalAmount,total_profit:totalProfitPreview,status:'draft'}],'return=minimal');
-        const sItems=previewItems.map(it=>({sale_id:txDraft.id,product_id:it.productId,qty:it.qty,harga_jual:it.hargaJual,hpp:it.hpp,subtotal:it.subtotal,profit:it.profit,consumptions:[]}));
+        await sb.post('sales',[{id:txDraft.id,nomor:txDraft.nomor,tanggal:txDraft.tanggal,customer:txDraft.customer,total:totalAmount,total_profit:totalProfitPreview,status:'draft',diskon_total:diskonTotal}],'return=minimal');
+        const sItems=previewItems.map(it=>({sale_id:txDraft.id,product_id:it.productId,qty:it.qty,harga_jual:it.hargaJual,diskon:it.diskon,hpp:it.hpp,subtotal:it.subtotal,profit:it.profit,consumptions:[]}));
         await sb.post('sale_items',sItems,'return=minimal');
-        db.sales.unshift({id:txDraft.id,nomor:txDraft.nomor,tanggal:txDraft.tanggal,customer:txDraft.customer,total:totalAmount,totalProfit:totalProfitPreview,status:'draft',items:previewItems});
+        db.sales.unshift({id:txDraft.id,nomor:txDraft.nomor,tanggal:txDraft.tanggal,customer:txDraft.customer,total:totalAmount,totalProfit:totalProfitPreview,status:'draft',diskonTotal,items:previewItems});
         await incrCounter('sale');
         toast('Draft disimpan — stock belum berkurang');
       }
     } else {
       // --- SELESAIKAN PENJUALAN: konsumsi FIFO beneran, kunci stock ---
+      const diskonTotal = txDraft.diskonTotal||0;
       let totalProfit=0, totalAmount=0;
       const processedItems=[];
       for(const it of validItems){
         const p=getProduct(it.productId);
         const result=fifoConsumeLocal(it.productId,it.qty,p?.hargaBeli||0);
-        const subtotal=it.qty*it.hargaJual;
+        const diskon = it.diskon||0;
+        const subtotal=Math.max(0, it.qty*it.hargaJual - diskon);
         const profit=subtotal-result.totalHpp;
         totalProfit+=profit; totalAmount+=subtotal;
-        processedItems.push({...it,subtotal,hpp:result.avgHpp,profit,consumptions:result.consumptions});
+        processedItems.push({...it,diskon,subtotal,hpp:result.avgHpp,profit,consumptions:result.consumptions});
       }
+      totalAmount = Math.max(0, totalAmount - diskonTotal);
+      totalProfit = totalProfit - diskonTotal;
       const layerUpdates={};
       processedItems.forEach(it=>it.consumptions.forEach(c=>{if(c.layerId){const l=db.layers.find(x=>x.layerId===c.layerId);if(l&&!layerUpdates[c.layerId])layerUpdates[c.layerId]=l.qtyRemaining;}}));
 
       if (isDraftEdit) {
         // Finalisasi draft yang sudah ada -> update record yang sama, jangan insert baru, jangan increment counter lagi
-        await sb.patch('sales', `?id=eq.${txDraft.id}`, { nomor:txDraft.nomor, tanggal:txDraft.tanggal, customer:txDraft.customer, total:totalAmount, total_profit:totalProfit, status:'final' });
+        await sb.patch('sales', `?id=eq.${txDraft.id}`, { nomor:txDraft.nomor, tanggal:txDraft.tanggal, customer:txDraft.customer, total:totalAmount, total_profit:totalProfit, status:'final', diskon_total:diskonTotal });
         await sb.delete('sale_items', `?sale_id=eq.${txDraft.id}`);
-        const sItems=processedItems.map(it=>({sale_id:txDraft.id,product_id:it.productId,qty:it.qty,harga_jual:it.hargaJual,hpp:it.hpp,subtotal:it.subtotal,profit:it.profit,consumptions:it.consumptions}));
+        const sItems=processedItems.map(it=>({sale_id:txDraft.id,product_id:it.productId,qty:it.qty,harga_jual:it.hargaJual,diskon:it.diskon,hpp:it.hpp,subtotal:it.subtotal,profit:it.profit,consumptions:it.consumptions}));
         await sb.post('sale_items',sItems,'return=minimal');
         await Promise.all(Object.entries(layerUpdates).map(([lid,qty])=>sb.patch('layers',`?layer_id=eq.${lid}`,{qty_remaining:qty})));
         const idx = db.sales.findIndex(s=>s.id===txDraft.id);
-        const updated = {id:txDraft.id,nomor:txDraft.nomor,tanggal:txDraft.tanggal,customer:txDraft.customer,total:totalAmount,totalProfit,status:'final',items:processedItems};
+        const updated = {id:txDraft.id,nomor:txDraft.nomor,tanggal:txDraft.tanggal,customer:txDraft.customer,total:totalAmount,totalProfit,status:'final',diskonTotal,items:processedItems};
         if (idx>=0) db.sales[idx]=updated; else db.sales.unshift(updated);
         toast('Penjualan diselesaikan — stock sudah dipotong');
       } else {
         // Penjualan baru langsung final (tanpa lewat draft)
-        await sb.post('sales',[{id:txDraft.id,nomor:txDraft.nomor,tanggal:txDraft.tanggal,customer:txDraft.customer,total:totalAmount,total_profit:totalProfit,status:'final'}],'return=minimal');
-        const sItems=processedItems.map(it=>({sale_id:txDraft.id,product_id:it.productId,qty:it.qty,harga_jual:it.hargaJual,hpp:it.hpp,subtotal:it.subtotal,profit:it.profit,consumptions:it.consumptions}));
+        await sb.post('sales',[{id:txDraft.id,nomor:txDraft.nomor,tanggal:txDraft.tanggal,customer:txDraft.customer,total:totalAmount,total_profit:totalProfit,status:'final',diskon_total:diskonTotal}],'return=minimal');
+        const sItems=processedItems.map(it=>({sale_id:txDraft.id,product_id:it.productId,qty:it.qty,harga_jual:it.hargaJual,diskon:it.diskon,hpp:it.hpp,subtotal:it.subtotal,profit:it.profit,consumptions:it.consumptions}));
         await sb.post('sale_items',sItems,'return=minimal');
         await Promise.all(Object.entries(layerUpdates).map(([lid,qty])=>sb.patch('layers',`?layer_id=eq.${lid}`,{qty_remaining:qty})));
-        db.sales.unshift({id:txDraft.id,nomor:txDraft.nomor,tanggal:txDraft.tanggal,customer:txDraft.customer,total:totalAmount,totalProfit,status:'final',items:processedItems});
+        db.sales.unshift({id:txDraft.id,nomor:txDraft.nomor,tanggal:txDraft.tanggal,customer:txDraft.customer,total:totalAmount,totalProfit,status:'final',diskonTotal,items:processedItems});
         await incrCounter('sale');
         toast('Penjualan disimpan');
       }
@@ -1589,24 +1623,28 @@ function viewTransaction(type, id) {
   const renderDetailItems = () => tx.items.map((it,i)=>{
     const p=getProduct(it.productId);
     if(type==='purchase') return`<tr><td>${i+1}</td><td><strong>${p?p.nama:'—'}</strong></td><td class="num">${fmt.num(it.qty)}</td><td class="num">${fmt.rp(it.hargaBeli)}</td><td class="num"><strong>${fmt.rp(it.subtotal)}</strong></td></tr>`;
-    const batchHtml=(hppVisible && it.consumptions && it.consumptions.length>1)?`<tr><td></td><td colspan="6" style="padding-top:0;padding-bottom:8px;font-size:11px;color:var(--text-dim);border-bottom:1px solid var(--border)">Batch: ${it.consumptions.map(c=>`${fmt.num(c.qty)}×${fmt.rp(c.hargaBeli)}${c._shortfall?' (fallback)':''}`).join(' + ')}</td></tr>`:'';
-    return`<tr><td>${i+1}</td><td><strong>${p?p.nama:'—'}</strong></td><td class="num">${fmt.num(it.qty)}</td><td class="num">${fmt.rp(it.hargaJual)}</td><td class="num" style="color:var(--text-dim)">${hppVisible?fmt.rp(it.hpp):'×××'}</td><td class="num"><strong>${fmt.rp(it.subtotal)}</strong></td><td class="num" style="color:${it.profit>=0?'var(--ok)':'var(--danger)'}">${hppVisible?fmt.rp(it.profit):'×××'}</td></tr>${batchHtml}`;
+    const batchHtml=(hppVisible && it.consumptions && it.consumptions.length>1)?`<tr><td></td><td colspan="7" style="padding-top:0;padding-bottom:8px;font-size:11px;color:var(--text-dim);border-bottom:1px solid var(--border)">Batch: ${it.consumptions.map(c=>`${fmt.num(c.qty)}×${fmt.rp(c.hargaBeli)}${c._shortfall?' (fallback)':''}`).join(' + ')}</td></tr>`:'';
+    return`<tr><td>${i+1}</td><td><strong>${p?p.nama:'—'}</strong></td><td class="num">${fmt.num(it.qty)}</td><td class="num">${fmt.rp(it.hargaJual)}</td><td class="num" style="color:${it.diskon>0?'var(--warn)':'var(--text-dim)'}">${it.diskon>0?fmt.rp(it.diskon):'—'}</td><td class="num" style="color:var(--text-dim)">${hppVisible?fmt.rp(it.hpp):'×××'}</td><td class="num"><strong>${fmt.rp(it.subtotal)}</strong></td><td class="num" style="color:${it.profit>=0?'var(--ok)':'var(--danger)'}">${hppVisible?fmt.rp(it.profit):'×××'}</td></tr>${batchHtml}`;
   }).join('');
 
   showModal(`
-    <div class="modal-header"><div class="modal-title">Detail ${type==='purchase'?'Pembelian':'Penjualan'}</div><button class="btn ghost" onclick="closeModal()">✕</button></div>
+    <div class="modal-header"><div class="modal-title">Detail ${type==='purchase'?'Pembelian':'Penjualan'}${tx.status==='draft'?' <span class="status warn">Draft</span>':''}</div><button class="btn ghost" onclick="closeModal()">✕</button></div>
     <div class="modal-body">
       <div style="margin-bottom:16px">
         <div class="detail-row"><span class="label">${type==='purchase'?'No. PO':'No. Invoice'}:</span><strong>${tx.nomor}</strong></div>
         <div class="detail-row"><span class="label">Tanggal:</span><strong>${fmt.date(tx.tanggal)}</strong></div>
         <div class="detail-row"><span class="label">${pLabel}:</span><strong>${pVal}</strong></div>
       </div>
-      ${type==='sale'?`<div style="text-align:right;margin-bottom:8px"><button type="button" class="btn sm ghost" id="detailToggleHpp">👁 HPP: ${hppVisible?'Terlihat':'Disembunyikan'}</button></div>`:''}
+      ${type==='sale'?`<div style="text-align:right;margin-bottom:8px"><button type="button" class="btn sm ghost" id="detailToggleHpp">👁 HPP & Profit: ${hppVisible?'Terlihat':'Disembunyikan'}</button></div>`:''}
       <div class="table-wrap"><table>
-        <thead><tr><th>#</th><th>Produk</th><th class="num">Qty</th><th class="num">${type==='purchase'?'Harga Beli':'Harga Jual'}</th>${type==='sale'?'<th class="num">HPP</th>':''}<th class="num">Subtotal</th>${type==='sale'?'<th class="num">Profit</th>':''}</tr></thead>
+        <thead><tr><th>#</th><th>Produk</th><th class="num">Qty</th><th class="num">${type==='purchase'?'Harga Beli':'Harga Jual'}</th>${type==='sale'?'<th class="num">Potongan</th><th class="num">HPP</th>':''}<th class="num">Subtotal</th>${type==='sale'?'<th class="num">Profit</th>':''}</tr></thead>
         <tbody id="detailItemsBody">${renderDetailItems()}</tbody>
       </table></div>
-      <div class="totals">${type==='sale'?`<div class="totals-row"><span>Total Profit:</span><strong class="profit">${hppVisible?fmt.rp(tx.totalProfit):'×××'}</strong></div>`:''}<div class="totals-row big"><span>Total:</span><strong>${fmt.rp(tx.total)}</strong></div></div>
+      <div class="totals">
+        ${type==='sale'&&tx.diskonTotal>0?`<div class="totals-row"><span>Diskon Total:</span><strong style="color:var(--warn)">-${fmt.rp(tx.diskonTotal)}</strong></div>`:''}
+        ${type==='sale'?`<div class="totals-row"><span>Total Profit:</span><strong class="profit">${hppVisible?fmt.rp(tx.totalProfit):'×××'}</strong></div>`:''}
+        <div class="totals-row big"><span>Total:</span><strong>${fmt.rp(tx.total)}</strong></div>
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn danger" onclick="deleteTransaction('${type}','${id}')">Hapus</button>
@@ -1616,7 +1654,7 @@ function viewTransaction(type, id) {
   const toggleBtn = document.getElementById('detailToggleHpp');
   if (toggleBtn) toggleBtn.onclick = () => {
     hppVisible = !hppVisible;
-    toggleBtn.innerHTML = `👁 HPP: ${hppVisible?'Terlihat':'Disembunyikan'}`;
+    toggleBtn.innerHTML = `👁 HPP & Profit: ${hppVisible?'Terlihat':'Disembunyikan'}`;
     document.getElementById('detailItemsBody').innerHTML = renderDetailItems();
     // Update total profit juga
     const profitEl = document.querySelector('.totals .profit');
@@ -1672,7 +1710,7 @@ function printInvoice(id) {
       <td style="text-align:center">${fmt.num(it.qty)}</td>
       <td style="text-align:center">${p?p.satuan:'-'}</td>
       <td style="text-align:right">${fmt.num(it.hargaJual)}</td>
-      <td></td>
+      <td style="text-align:right">${it.diskon>0?fmt.num(it.diskon):''}</td>
       <td style="text-align:right">${fmt.num(it.subtotal)}</td>
     </tr>`;
   }).join('');
@@ -1752,7 +1790,8 @@ function printInvoice(id) {
       <div class="space"></div>
     </div>
     <table class="totals-table">
-      <tr><td>Subtotal</td><td style="text-align:right">${fmt.num(tx.total)}</td></tr>
+      <tr><td>Subtotal</td><td style="text-align:right">${fmt.num(tx.total + (tx.diskonTotal||0))}</td></tr>
+      ${tx.diskonTotal>0?`<tr><td>Diskon</td><td style="text-align:right">-${fmt.num(tx.diskonTotal)}</td></tr>`:''}
       <tr><td>Ongkos Kirim</td><td style="text-align:right"></td></tr>
       <tr><td>Total</td><td style="text-align:right">${fmt.num(tx.total)}</td></tr>
     </table>
