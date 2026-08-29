@@ -193,6 +193,14 @@ const MASTER_IMPORT_DATA = {"products":[{"id":"p_1","nama":"Batu Gerinda 14 W Ho
 
 // Kategori biaya operasional yang umum untuk toko material
 const EXPENSE_CATEGORIES = ['BTKL (Gaji Karyawan)', 'Listrik', 'Sewa/Kontrakan', 'Transportasi/BBM', 'Internet & Telepon', 'Perlengkapan Toko', 'Retribusi/Pajak', 'Lainnya'];
+
+// Flag prioritas untuk produk yang perlu di-order
+const ORDER_FLAGS = {
+  'urgent': { label: 'Urgent', color: 'var(--danger)', bg: 'rgba(239,68,68,0.15)' },
+  'empty': { label: 'Stock Kosong di Gudang', color: '#f87171', bg: 'rgba(239,68,68,0.15)' },
+  'not_urgent': { label: 'Tidak Urgent', color: 'var(--ok)', bg: 'rgba(34,197,94,0.15)' },
+  'ordered': { label: 'Sudah Dipesan', color: 'var(--text-dim)', bg: 'rgba(138,148,163,0.15)' }
+};
 ;
 
 // ============================================================
@@ -383,7 +391,8 @@ async function loadAll() {
     // Map ke in-memory format
     db.products = products.map(p => ({
       id: p.id, nama: p.nama, kode: p.kode, satuan: p.satuan,
-      hargaBeli: Number(p.harga_beli), hargaJual: Number(p.harga_jual), buffer: Number(p.buffer)
+      hargaBeli: Number(p.harga_beli), hargaJual: Number(p.harga_jual), buffer: Number(p.buffer),
+      orderFlag: p.order_flag || ''
     }));
 
     db.layers = layers.map(l => ({
@@ -624,6 +633,21 @@ function render() {
 // ============================================================
 // DASHBOARD
 // ============================================================
+let showBelanjaEstimasi = false;
+
+function getReorderList() {
+  return db.products.filter(p=>p.buffer>0&&getStock(p.id)<p.buffer).map(p=>{
+    const stock = getStock(p.id);
+    const target = p.buffer + 1; // target stock setelah restock
+    const qtyToOrder = Math.max(0, target - stock);
+    const cheapest = getCheapestVendor(p.id);
+    const unitPrice = cheapest ? cheapest.harga : p.hargaBeli;
+    const vendorLabel = cheapest ? cheapest.vendor : null;
+    const estCost = qtyToOrder * unitPrice;
+    return { product:p, stock, target, qtyToOrder, unitPrice, vendorLabel, estCost };
+  });
+}
+
 function renderDashboard() {
   let totalStockValue=0, lowStockCount=0;
   db.products.forEach(p => {
@@ -637,6 +661,8 @@ function renderDashboard() {
   const purM=db.purchases.filter(p=>{const d=new Date(p.tanggal);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();}).reduce((a,p)=>a+p.total,0);
   const recentS=[...db.sales].filter(s=>s.status!=='draft').slice(0,5);
   const recentP=[...db.purchases].slice(0,5);
+  const reorderList = getReorderList();
+  const totalEstimasi = reorderList.reduce((a,r)=>a+r.estCost,0);
 
   return `
   <div class="page-title">Dashboard</div>
@@ -649,7 +675,39 @@ function renderDashboard() {
     <div class="card"><div class="card-label">Profit Bulan Ini</div><div class="card-value" style="color:var(--ok)">${fmt.rp(profitM)}</div><div class="card-sub">kotor FIFO</div></div>
     <div class="card"><div class="card-label">Pembelian Bulan Ini</div><div class="card-value">${fmt.rp(purM)}</div><div class="card-sub">ke supplier</div></div>
   </div>
-  ${lowStockCount>0?`<div class="panel"><div class="panel-header"><div class="panel-title">⚠️ Produk Perlu Di-order</div></div><div class="table-wrap"><table><thead><tr><th>Produk</th><th class="num">Stock</th><th class="num">Buffer</th><th class="num">Selisih</th></tr></thead><tbody>${db.products.filter(p=>p.buffer>0&&getStock(p.id)<p.buffer).map(p=>{const s=getStock(p.id);return`<tr><td><strong>${p.nama}</strong><br><small style="color:var(--text-dim)">${p.kode}</small></td><td class="num">${fmt.num(s)}</td><td class="num">${fmt.num(p.buffer)}</td><td class="num" style="color:var(--danger)">${fmt.num(s-p.buffer)}</td></tr>`;}).join('')}</tbody></table></div></div>`:''}
+  ${lowStockCount>0?`<div class="panel">
+    <div class="panel-header">
+      <div class="panel-title">⚠️ Produk Perlu Di-order</div>
+      <button class="btn sm" id="toggleBelanjaEstimasi">${showBelanjaEstimasi?'🙈 Sembunyikan Estimasi Belanja':'💰 Tampilkan Estimasi Belanja'}</button>
+    </div>
+    ${showBelanjaEstimasi?`<div class="alert info" style="margin:12px 16px 0">Qty dihitung untuk mencapai target stock <strong>Buffer + 1</strong>. Harga pakai vendor termurah yang tercatat — kalau belum ada data vendor, pakai Harga Beli Ref.</div>`:''}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Produk</th><th class="num">Stock</th><th class="num">Buffer</th><th class="num">Selisih</th>${showBelanjaEstimasi?'<th class="num">Qty Perlu Dibeli</th><th class="num">Harga Satuan</th><th>Vendor Termurah</th><th class="num">Estimasi Biaya</th>':''}<th>Flag</th></tr></thead>
+      <tbody>${reorderList.map(r=>{
+        const p=r.product;
+        const flagInfo = p.orderFlag && ORDER_FLAGS[p.orderFlag] ? ORDER_FLAGS[p.orderFlag] : null;
+        return `<tr>
+          <td><strong>${p.nama}</strong><br><small style="color:var(--text-dim)">${p.kode}</small></td>
+          <td class="num">${fmt.num(r.stock)}</td>
+          <td class="num">${fmt.num(p.buffer)}</td>
+          <td class="num" style="color:var(--danger)">${fmt.num(r.stock-p.buffer)}</td>
+          ${showBelanjaEstimasi?`
+          <td class="num"><strong>${fmt.num(r.qtyToOrder)}</strong> ${p.satuan}</td>
+          <td class="num">${fmt.rp(r.unitPrice)}</td>
+          <td>${r.vendorLabel?`<span style="color:var(--ok)">${escapeHtml(r.vendorLabel)}</span>`:`<small style="color:var(--text-dim)">Harga Ref.</small>`}</td>
+          <td class="num"><strong>${fmt.rp(r.estCost)}</strong></td>
+          `:''}
+          <td>
+            <select data-order-flag="${p.id}" style="font-size:11px;padding:4px 6px;background:${flagInfo?flagInfo.bg:'var(--bg)'};color:${flagInfo?flagInfo.color:'var(--text-dim)'};border-color:var(--border)">
+              <option value="">— Pilih Flag —</option>
+              ${Object.entries(ORDER_FLAGS).map(([k,v])=>`<option value="${k}" ${p.orderFlag===k?'selected':''}>${v.label}</option>`).join('')}
+            </select>
+          </td>
+        </tr>`;
+      }).join('')}</tbody>
+      ${showBelanjaEstimasi?`<tfoot><tr style="background:var(--panel-2)"><td colspan="7" style="text-align:right;font-weight:600">Total Estimasi Belanja:</td><td class="num" style="font-weight:700;font-size:15px;color:var(--accent)">${fmt.rp(totalEstimasi)}</td></tr></tfoot>`:''}
+    </table></div>
+  </div>`:''}
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px">
     <div class="panel"><div class="panel-header"><div class="panel-title">Pembelian Terakhir</div></div>${recentP.length===0?'<div class="empty"><div class="empty-icon">📦</div>Belum ada pembelian</div>':`<div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>No</th><th>Supplier</th><th class="num">Total</th></tr></thead><tbody>${recentP.map(p=>`<tr><td>${fmt.dateShort(p.tanggal)}</td><td>${p.nomor}</td><td>${p.supplier}</td><td class="num">${fmt.rp(p.total)}</td></tr>`).join('')}</tbody></table></div>`}</div>
     <div class="panel"><div class="panel-header"><div class="panel-title">Penjualan Terakhir</div></div>${recentS.length===0?'<div class="empty"><div class="empty-icon">💰</div>Belum ada penjualan</div>':`<div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>No</th><th>Customer</th><th class="num">Total</th><th class="num">Profit</th></tr></thead><tbody>${recentS.map(s=>`<tr><td>${fmt.dateShort(s.tanggal)}</td><td>${s.nomor}</td><td>${s.customer}</td><td class="num">${fmt.rp(s.total)}</td><td class="num" style="color:var(--ok)">${fmt.rp(s.totalProfit)}</td></tr>`).join('')}</tbody></table></div>`}</div>
@@ -782,6 +840,10 @@ function renderRiwayat() {
 // ============================================================
 function attachPageHandlers() {
   const bind = (id, fn) => { const el=document.getElementById(id); if(el) el[fn.type||'onclick']=fn; };
+
+  // Dashboard
+  const tbe=document.getElementById('toggleBelanjaEstimasi'); if(tbe) tbe.onclick=()=>{showBelanjaEstimasi=!showBelanjaEstimasi;render();};
+  document.querySelectorAll('[data-order-flag]').forEach(sel=>sel.onchange=(e)=>setOrderFlag(sel.dataset.orderFlag, e.target.value));
 
   // Produk
   const bap=document.getElementById('btnAddProduk'); if(bap) bap.onclick=()=>openProdukModal();
@@ -989,6 +1051,18 @@ async function deleteVendorPrice(id, productId) {
     document.getElementById('ptab-vendor').innerHTML = renderVendorTabContent(productId);
     attachVendorTabHandlers(productId);
     render();
+  } catch(e) { setBadge('online'); toast('Gagal: '+e.message,'err'); }
+}
+
+async function setOrderFlag(productId, flag) {
+  setBadge('syncing');
+  try {
+    await sb.patch('products', `?id=eq.${productId}`, { order_flag: flag || null });
+    const p = getProduct(productId);
+    if (p) p.orderFlag = flag;
+    setBadge('online');
+    render();
+    toast(flag ? `Flag diset: ${ORDER_FLAGS[flag]?.label||flag}` : 'Flag dihapus');
   } catch(e) { setBadge('online'); toast('Gagal: '+e.message,'err'); }
 }
 
@@ -2198,114 +2272,4 @@ function renderLabaRugi() {
     <div class="card"><div class="card-label">Laba Kotor</div><div class="card-value" style="color:var(--ok)">${fmt.rp(current.grossProfit)}</div></div>
     <div class="card"><div class="card-label">Biaya Operasional</div><div class="card-value" style="color:${current.totalExpenses>0?'var(--danger)':'inherit'}">${fmt.rp(current.totalExpenses)}</div><div class="card-sub">BTKL, listrik, dll</div></div>
     <div class="card"><div class="card-label">Kerugian Stock</div><div class="card-value" style="color:${current.lossValue>0?'var(--danger)':'inherit'}">${fmt.rp(current.lossValue)}</div><div class="card-sub">barang rusak/hilang</div></div>
-    <div class="card"><div class="card-label">Laba Bersih</div><div class="card-value" style="color:${current.netProfit>=0?'var(--ok)':'var(--danger)'}">${fmt.rp(current.netProfit)}</div>
-      ${growthPct!==null?`<div class="card-sub" style="color:${growthPct>=0?'var(--ok)':'var(--danger)'}">${growthPct>=0?'▲':'▼'}${Math.abs(growthPct).toFixed(1)}% vs periode lalu</div>`:''}
-    </div>
-    <div class="card"><div class="card-label">Margin Bersih</div><div class="card-value">${current.margin.toFixed(1)}%</div></div>
-  </div>
-
-  <div class="panel">
-    <div class="panel-header"><div class="panel-title">Tren Laba Bersih</div></div>
-    <div class="panel-body">
-      <div style="display:flex;align-items:flex-end;gap:6px;height:140px;margin-bottom:8px">
-        ${trend.map(t=>{
-          const h = Math.max(4, Math.abs(t.netProfit)/maxProfit*120);
-          const color = t.netProfit>=0 ? (t.isCurrent?'var(--accent)':'var(--ok)') : 'var(--danger)';
-          return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%" title="${t.label}: ${fmt.rp(t.netProfit)}">
-            <div style="width:100%;max-width:36px;height:${h}px;background:${color};border-radius:4px 4px 0 0;${t.isCurrent?'box-shadow:0 0 0 2px var(--accent)':''}"></div>
-          </div>`;
-        }).join('')}
-      </div>
-      <div style="display:flex;gap:6px">
-        ${trend.map(t=>`<div style="flex:1;text-align:center;font-size:10px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.label}</div>`).join('')}
-      </div>
-    </div>
-  </div>
-
-  <div class="panel">
-    <div class="panel-header"><div class="panel-title">Rincian per Periode</div></div>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Periode</th><th class="num">Pendapatan</th><th class="num">HPP</th><th class="num">Laba Kotor</th><th class="num">Biaya Ops.</th><th class="num">Kerugian</th><th class="num">Laba Bersih</th><th class="num">Margin</th><th class="num">Transaksi</th></tr></thead>
-      <tbody>${trend.slice().reverse().map(t=>`
-        <tr style="${t.isCurrent?'background:var(--panel-2)':''}">
-          <td><strong>${t.label}</strong>${t.isCurrent?' <span class="status ok">Sekarang</span>':''}</td>
-          <td class="num">${fmt.rp(t.revenue)}</td>
-          <td class="num" style="color:var(--text-dim)">${fmt.rp(t.cogs)}</td>
-          <td class="num" style="color:var(--ok)">${fmt.rp(t.grossProfit)}</td>
-          <td class="num" style="color:${t.totalExpenses>0?'var(--danger)':'var(--text-dim)'}">${t.totalExpenses>0?'-':''}${fmt.rp(t.totalExpenses)}</td>
-          <td class="num" style="color:${t.lossValue>0?'var(--danger)':'var(--text-dim)'}">${t.lossValue>0?'-':''}${fmt.rp(t.lossValue)}</td>
-          <td class="num" style="color:${t.netProfit>=0?'var(--ok)':'var(--danger)'}"><strong>${fmt.rp(t.netProfit)}</strong></td>
-          <td class="num">${t.margin.toFixed(1)}%</td>
-          <td class="num">${t.txCount}</td>
-        </tr>
-      `).join('')}</tbody>
-    </table></div>
-  </div>
-
-  ${Object.keys(current.expenseByCategory).length>0?`
-  <div class="panel">
-    <div class="panel-header"><div class="panel-title">Biaya Operasional per Kategori — ${periodLabel}</div></div>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Kategori</th><th class="num">Jumlah</th><th class="num">% dari Total Biaya</th></tr></thead>
-      <tbody>${Object.entries(current.expenseByCategory).sort((a,b)=>b[1]-a[1]).map(([kat,jml])=>`
-        <tr>
-          <td><span class="status warn">${escapeHtml(kat)}</span></td>
-          <td class="num"><strong>${fmt.rp(jml)}</strong></td>
-          <td class="num">${(jml/current.totalExpenses*100).toFixed(1)}%</td>
-        </tr>
-      `).join('')}</tbody>
-    </table></div>
-  </div>`:''}
-
-  <div class="panel">
-    <div class="panel-header"><div class="panel-title">Produk Paling Untung — ${periodLabel}</div></div>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Produk</th><th class="num">Qty Terjual</th><th class="num">Pendapatan</th><th class="num">Profit</th></tr></thead>
-      <tbody>${topProducts.length===0?`<tr><td colspan="4"><div class="empty" style="padding:20px">Belum ada penjualan di periode ini</div></td></tr>`:topProducts.map(t=>`
-        <tr>
-          <td><strong>${t.product.nama}</strong></td>
-          <td class="num">${fmt.num(t.qty)} ${t.product.satuan}</td>
-          <td class="num">${fmt.rp(t.revenue)}</td>
-          <td class="num" style="color:var(--ok)"><strong>${fmt.rp(t.profit)}</strong></td>
-        </tr>
-      `).join('')}</tbody>
-    </table></div>
-  </div>`;
-}
-
-function doLogout() {
-  sessionStorage.removeItem(SESSION_KEY);
-  document.getElementById('app-root').style.display='none';
-  document.getElementById('login-screen').style.display='flex';
-  document.getElementById('loginInput').value='';
-  document.getElementById('loginError').style.display='none';
-  setTimeout(()=>document.getElementById('loginInput').focus(),100);
-}
-function showModal(html){document.getElementById('modalContent').innerHTML=html;document.getElementById('modal').classList.add('open');}
-function closeModal(){document.getElementById('modal').classList.remove('open');}
-function closeModalTx(){txDraft=null;closeModal();}
-document.getElementById('modal').addEventListener('click',e=>{if(e.target.id==='modal'){if(txDraft&&txDraft.items.some(i=>i.productId)){if(!confirm('Ada data belum disimpan. Tutup?'))return;}closeModalTx();}});
-
-// ============================================================
-// INIT
-// ============================================================
-if(SUPABASE_URL.includes('GANTI') || SUPABASE_KEY.includes('GANTI')) {
-  document.getElementById('login-screen').style.display='none';
-  document.getElementById('app-root').style.display='block';
-  document.getElementById('app').innerHTML=`
-    <div class="loading-full">
-      <div style="font-size:40px">⚙️</div>
-      <div style="font-size:18px;color:var(--text)">Setup diperlukan</div>
-      <div class="alert warn" style="max-width:500px;text-align:left">
-        Isi SUPABASE_URL dan SUPABASE_KEY di bagian atas file HTML.
-      </div>
-    </div>`;
-} else if(checkSession()) {
-  document.getElementById('app-root').style.display='block';
-  loadAll();
-} else {
-  showLoginScreen();
-}
-</script>
-</body>
-</html>
+    <div class="card"><div class="card-label">Laba Bersih</div><div class="card-value" style="color:${current.netProfit>=0?'var(--ok)':'var(--danger)'}">${fmt.rp(current.n
