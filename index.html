@@ -738,6 +738,10 @@ function renderProduk() {
       </div>
       <button class="btn primary" id="btnAddProduk">+ Produk Baru</button>
     </div>
+    <div class="panel-body" style="padding:10px 16px;border-bottom:1px solid var(--border)">
+      <button class="btn sm" id="btnExportStock">📊 Export Stock Saat Ini (JSON)</button>
+      <span style="font-size:12px;color:var(--text-dim);margin-left:8px">Snapshot stock, HPP, dan vendor termurah — untuk laporan atau stock opname</span>
+    </div>
     <div class="table-wrap"><table>
       <thead><tr><th>Produk</th><th>Kode</th><th>Satuan</th><th class="num" title="Harga referensi pembelian berikutnya">Harga Beli Ref.</th><th class="num" title="HPP rata-rata FIFO dari stock yang ada">HPP Rata2</th><th class="num">Harga Jual</th><th class="num">Stock</th><th class="num">Nilai Stock</th><th>Status</th><th>Vendor</th><th></th></tr></thead>
       <tbody>${list.length===0?`<tr><td colspan="11"><div class="empty"><div class="empty-icon">🔍</div>Tidak ada produk</div></td></tr>`:list.map(p=>{
@@ -847,6 +851,7 @@ function attachPageHandlers() {
 
   // Produk
   const bap=document.getElementById('btnAddProduk'); if(bap) bap.onclick=()=>openProdukModal();
+  const bes=document.getElementById('btnExportStock'); if(bes) bes.onclick=exportStockSnapshot;
   document.querySelectorAll('[data-edit-produk]').forEach(b=>b.onclick=()=>openProdukModal(b.dataset.editProduk));
   const si=document.getElementById('produkSearch');
   if(si) si.oninput=e=>{produkSearch=e.target.value;render();setTimeout(()=>{const el=document.getElementById('produkSearch');if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length);}},0);};
@@ -1932,6 +1937,44 @@ function printInvoice(id) {
 // ============================================================
 // IMPORT / EXPORT
 // ============================================================
+function exportStockSnapshot() {
+  const snapshot = db.products.map(p => {
+    const stock = getStock(p.id);
+    const nilaiStock = getStockValue(p.id);
+    const avgHpp = getAvgHpp(p.id);
+    const cheapest = getCheapestVendor(p.id);
+    const status = p.buffer>0 && stock<p.buffer ? 'Perlu Order' : (stock<=0 ? 'Habis' : 'Aman');
+    return {
+      nama: p.nama,
+      kode: p.kode,
+      satuan: p.satuan,
+      stock,
+      hargaBeliRef: p.hargaBeli,
+      hppRataRata: Math.round(avgHpp),
+      hargaJual: p.hargaJual,
+      nilaiStock: Math.round(nilaiStock),
+      buffer: p.buffer,
+      status,
+      vendorTermurah: cheapest ? { nama: cheapest.vendor, harga: cheapest.harga } : null
+    };
+  }).sort((a,b)=>a.nama.localeCompare(b.nama));
+
+  const output = {
+    exportedAt: new Date().toISOString(),
+    tanggal: fmt.today(),
+    totalProduk: snapshot.length,
+    totalNilaiStock: Math.round(snapshot.reduce((a,s)=>a+s.nilaiStock,0)),
+    produkPerluOrder: snapshot.filter(s=>s.status==='Perlu Order').length,
+    produkHabis: snapshot.filter(s=>s.status==='Habis').length,
+    produk: snapshot
+  };
+
+  const blob=new Blob([JSON.stringify(output,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob), a=document.createElement('a');
+  a.href=url; a.download=`feoni-steel-stock-${fmt.today()}.json`; a.click(); URL.revokeObjectURL(url);
+  toast(`Snapshot stock (${snapshot.length} produk) berhasil didownload`);
+}
+
 function exportData() {
   const data={products:db.products,purchases:db.purchases,sales:db.sales,adjustments:db.adjustments,layers:db.layers,counters:db.counters};
   const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
