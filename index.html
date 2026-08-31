@@ -1703,6 +1703,34 @@ function updateTotalsDisplayOnly(type) {
   }
 }
 
+// Setiap kali pembelian disimpan (draft/final), otomatis catat/update harga vendor itu
+// supaya daftar perbandingan harga vendor selalu segar tanpa input manual dobel.
+async function syncVendorPricesFromPurchase(vendorName, items) {
+  if (!vendorName || !vendorName.trim()) return 0;
+  const vname = vendorName.trim();
+  let changed = 0;
+  for (const it of items) {
+    if (!it.productId || !it.hargaBeli || it.hargaBeli<=0) continue;
+    const existing = db.vendorPrices.find(v=>v.productId===it.productId && v.vendor.toLowerCase()===vname.toLowerCase());
+    try {
+      if (existing) {
+        if (existing.harga !== it.hargaBeli) {
+          await sb.patch('vendor_prices', `?id=eq.${existing.id}`, { harga: it.hargaBeli, updated_at: new Date().toISOString() });
+          existing.harga = it.hargaBeli;
+          existing.updatedAt = new Date().toISOString();
+          changed++;
+        }
+      } else {
+        const newId = uid('vp');
+        await sb.post('vendor_prices',[{id:newId, product_id:it.productId, vendor_name:vname, harga:it.hargaBeli}],'return=minimal');
+        db.vendorPrices.push({id:newId, productId:it.productId, vendor:vname, harga:it.hargaBeli, updatedAt:new Date().toISOString()});
+        changed++;
+      }
+    } catch(e) { console.error('Gagal sync harga vendor:', e); }
+  }
+  return changed;
+}
+
 async function saveTransaction(type, asDraft, isDraftEdit) {
   const partyField=type==='purchase'?'supplier':'customer';
   if(!txDraft[partyField]?.trim()) return toast(`Nama ${partyField} wajib diisi`,'err');
@@ -1733,14 +1761,16 @@ async function saveTransaction(type, asDraft, isDraftEdit) {
           const idx = db.purchases.findIndex(p=>p.id===txDraft.id);
           const updated = {id:txDraft.id,nomor:txDraft.nomor,tanggal:txDraft.tanggal,supplier:txDraft.supplier,total:totalAmount,status:'draft',paymentStatus:'lunas',jatuhTempo:null,items:draftItems};
           if (idx>=0) db.purchases[idx]=updated; else db.purchases.unshift(updated);
-          toast('Draft rencana pembelian diperbarui');
+          const vpChanged = await syncVendorPricesFromPurchase(txDraft.supplier, draftItems);
+          toast('Draft rencana pembelian diperbarui' + (vpChanged>0?` · ${vpChanged} harga vendor ter-update`:''));
         } else {
           await sb.post('purchases',[{id:txDraft.id,nomor:txDraft.nomor,tanggal:txDraft.tanggal,supplier:txDraft.supplier,total:totalAmount,status:'draft'}],'return=minimal');
           const items=draftItems.map(it=>({purchase_id:txDraft.id,product_id:it.productId,qty:it.qty,harga_beli:it.hargaBeli,subtotal:it.subtotal}));
           await sb.post('purchase_items',items,'return=minimal');
           db.purchases.unshift({id:txDraft.id,nomor:txDraft.nomor,tanggal:txDraft.tanggal,supplier:txDraft.supplier,total:totalAmount,status:'draft',paymentStatus:'lunas',jatuhTempo:null,items:draftItems});
           await incrCounter('purchase');
-          toast('Draft rencana pembelian disimpan — stock belum bertambah');
+          const vpChanged = await syncVendorPricesFromPurchase(txDraft.supplier, draftItems);
+          toast('Draft rencana pembelian disimpan — stock belum bertambah' + (vpChanged>0?` · ${vpChanged} harga vendor ter-update`:''));
         }
       } else {
         // --- SELESAIKAN PEMBELIAN: buat layer FIFO, stock beneran bertambah ---
@@ -1759,7 +1789,8 @@ async function saveTransaction(type, asDraft, isDraftEdit) {
           const updated = {id:txDraft.id,nomor:txDraft.nomor,tanggal:txDraft.tanggal,supplier:txDraft.supplier,total:totalAmount,status:'final',paymentStatus,jatuhTempo,items:finalItems};
           if (idx>=0) db.purchases[idx]=updated; else db.purchases.unshift(updated);
           layers.forEach(l=>db.layers.push({layerId:l.layer_id,productId:l.product_id,qtyRemaining:l.qty_remaining,hargaBeli:l.harga_beli,sourceId:l.source_id,sourceType:l.source_type,tanggal:l.tanggal}));
-          toast('Pembelian diselesaikan — stock bertambah');
+          const vpChanged = await syncVendorPricesFromPurchase(txDraft.supplier, finalItems);
+          toast('Pembelian diselesaikan — stock bertambah' + (vpChanged>0?` · ${vpChanged} harga vendor ter-update`:''));
         } else {
           await sb.post('purchases',[{id:txDraft.id,nomor:txDraft.nomor,tanggal:txDraft.tanggal,supplier:txDraft.supplier,total:totalAmount,status:'final',payment_status:paymentStatus,jatuh_tempo:jatuhTempo}],'return=minimal');
           const items=finalItems.map(it=>({purchase_id:txDraft.id,product_id:it.productId,qty:it.qty,harga_beli:it.hargaBeli,subtotal:it.subtotal}));
@@ -1770,7 +1801,9 @@ async function saveTransaction(type, asDraft, isDraftEdit) {
           db.purchases.unshift({id:txDraft.id,nomor:txDraft.nomor,tanggal:txDraft.tanggal,supplier:txDraft.supplier,total:totalAmount,status:'final',paymentStatus,jatuhTempo,items:finalItems});
           layers.forEach(l=>db.layers.push({layerId:l.layer_id,productId:l.product_id,qtyRemaining:l.qty_remaining,hargaBeli:l.harga_beli,sourceId:l.source_id,sourceType:l.source_type,tanggal:l.tanggal}));
           await incrCounter('purchase');
-          toast(paymentStatus==='belum_lunas' ? 'Pembelian disimpan — stock bertambah, status Belum Lunas' : 'Pembelian disimpan');
+          const vpChanged = await syncVendorPricesFromPurchase(txDraft.supplier, finalItems);
+          const baseMsg = paymentStatus==='belum_lunas' ? 'Pembelian disimpan — stock bertambah, status Belum Lunas' : 'Pembelian disimpan';
+          toast(baseMsg + (vpChanged>0?` · ${vpChanged} harga vendor ter-update`:''));
         }
       }
     } else if (asDraft) {
