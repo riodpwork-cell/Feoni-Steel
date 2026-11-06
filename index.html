@@ -834,7 +834,7 @@ function renderPenjualan() {
         <td class="num">${s.items.length}</td>
         <td class="num"><strong>${fmt.rp(s.total)}</strong></td>
         ${penjualanTab==='final'?`<td class="num" style="color:var(--ok)">${fmt.rp(s.totalProfit)}</td>`:''}
-        <td>${s.status==='draft'?`<button class="btn sm primary" data-continue-draft="${s.id}">Lanjutkan</button>`:`<button class="btn sm" data-view-penjualan="${s.id}">Lihat</button>`} <button class="btn sm danger" data-del-penjualan="${s.id}">Hapus</button></td>
+        <td>${s.status==='draft'?`<button class="btn sm primary" data-continue-draft="${s.id}">Lanjutkan</button> <button class="btn sm" data-print-penjualan="${s.id}" title="Cetak invoice (belum dibayar)">🖨 Cetak</button>`:`<button class="btn sm" data-view-penjualan="${s.id}">Lihat</button>`} <button class="btn sm danger" data-del-penjualan="${s.id}">Hapus</button></td>
       </tr>
     `).join('')}</tbody>
     </table></div>
@@ -914,6 +914,7 @@ function attachPageHandlers() {
   document.querySelectorAll('[data-view-penjualan]').forEach(b=>b.onclick=()=>viewTransaction('sale',b.dataset.viewPenjualan));
   document.querySelectorAll('[data-del-penjualan]').forEach(b=>b.onclick=()=>deleteTransaction('sale',b.dataset.delPenjualan));
   document.querySelectorAll('[data-continue-draft]').forEach(b=>b.onclick=()=>openTxModal('sale', b.dataset.continueDraft));
+  document.querySelectorAll('[data-print-penjualan]').forEach(b=>b.onclick=()=>printInvoice(b.dataset.printPenjualan));
   document.querySelectorAll('[data-penjualantab]').forEach(b=>b.onclick=()=>{penjualanTab=b.dataset.penjualantab;render();});
 
   // Riwayat
@@ -1476,6 +1477,7 @@ function openTxModal(type, existingId) {
       <div style="display:flex;gap:8px">
         <button class="btn ghost" onclick="closeModalTx()">Batal</button>
         <button class="btn" id="txSaveDraft">Simpan sebagai Draft</button>
+        ${type==='sale'?`<button class="btn" id="txSaveDraftPrint" title="Simpan sebagai draft lalu cetak invoice belum dibayar">🖨 Simpan Draft & Cetak</button>`:''}
         <button class="btn primary" id="txSave">Selesaikan ${actionLabel}</button>
       </div>
     </div>`);
@@ -1505,6 +1507,17 @@ function openTxModal(type, existingId) {
   document.getElementById('txSave').onclick=()=>saveTransaction(type, false, isDraftEdit);
   const draftBtn = document.getElementById('txSaveDraft');
   if (draftBtn) draftBtn.onclick=()=>saveTransaction(type, true, isDraftEdit);
+  const draftPrintBtn = document.getElementById('txSaveDraftPrint');
+  if (draftPrintBtn) draftPrintBtn.onclick=async()=>{
+    // Buka jendela cetak SEKARANG (dalam klik user) supaya tidak diblokir popup blocker, isi setelah tersimpan
+    const w = window.open('','_blank');
+    if (!w) return toast('Popup diblokir browser. Izinkan popup untuk situs ini, atau simpan draft lalu klik Cetak di daftar draft.','err');
+    w.document.write('<p style="font-family:Arial;padding:24px">Menyimpan draft...</p>');
+    const id = txDraft.id;
+    await saveTransaction('sale', true, isDraftEdit);
+    if (txDraft===null && db.sales.some(x=>x.id===id && x.status==='draft')) printInvoice(id, w);
+    else w.close(); // gagal simpan (validasi/error) -> toast sudah muncul
+  };
   const toggleBtn = document.getElementById('txToggleHpp');
   if (toggleBtn) toggleBtn.onclick=()=>{
     hppVisible = !hppVisible;
@@ -2468,9 +2481,13 @@ async function deleteTransaction(type, id) {
 // ============================================================
 // PRINT INVOICE
 // ============================================================
-function printInvoice(id) {
-  const tx=db.sales.find(s=>s.id===id); if(!tx) return;
-  const w=window.open('','_blank');
+function printInvoice(id, win) {
+  const tx=db.sales.find(s=>s.id===id); if(!tx) { if(win) win.close(); return; }
+  const w=win || window.open('','_blank');
+  if (!w) return toast('Popup diblokir browser. Izinkan popup untuk situs ini.','err');
+  const isDraft = tx.status==='draft';
+  const cust = findCustomer(tx.customerId, tx.customer, '');
+  const custPhone = cust?.telepon || '';
   const rows=tx.items.map((it,i)=>{
     const p=getProduct(it.productId);
     return `<tr>
@@ -2490,7 +2507,8 @@ function printInvoice(id) {
 
   const tglFormatted = new Date(tx.tanggal).toLocaleDateString('id-ID',{day:'2-digit',month:'short',year:'numeric'});
 
-  w.document.write(`<!DOCTYPE html><html><head><title>Invoice ${tx.nomor}</title>
+  w.document.open(); // kosongkan teks "Menyimpan draft..." kalau jendela dibuka lebih dulu
+  w.document.write(`<!DOCTYPE html><html><head><title>Invoice ${tx.nomor}${isDraft?' (Belum Dibayar)':''}</title>
   <style>
     * { box-sizing: border-box; }
     body { font-family: Arial, Helvetica, sans-serif; padding: 24px; font-size: 12px; color:#000; }
@@ -2501,6 +2519,7 @@ function printInvoice(id) {
     .meta-table { border-collapse:collapse; margin-top:8px; margin-left:auto; }
     .meta-table td { border:1px solid #000; padding:4px 10px; font-size:12px; }
     .meta-table td:first-child { font-weight:bold; background:#f2f2f2; }
+    .meta-table td.unpaid { font-weight:800; color:#b00020; }
     .customer-box { border:1px solid #000; display:inline-flex; align-items:center; margin:14px 0; }
     .customer-box .lbl { background:#f2f2f2; padding:6px 10px; font-weight:bold; border-right:1px solid #000; }
     .customer-box .val { padding:6px 14px; min-width:200px; }
@@ -2533,11 +2552,12 @@ function printInvoice(id) {
       <table class="meta-table">
         <tr><td>Nomor</td><td>${tx.nomor}</td></tr>
         <tr><td>Tanggal</td><td>${tglFormatted}</td></tr>
+        ${isDraft?`<tr><td>Status</td><td class="unpaid">BELUM DIBAYAR</td></tr>`:''}
       </table>
     </div>
   </div>
 
-  <div class="customer-box"><span class="lbl">Customer</span><span class="val">${escapeHtml(tx.customer)}</span></div>
+  <div class="customer-box"><span class="lbl">Customer</span><span class="val">${escapeHtml(tx.customer)}${custPhone?`<br><small>Telp: ${escapeHtml(custPhone)}</small>`:''}</span></div>
 
   <table class="items">
     <thead>
